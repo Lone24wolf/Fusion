@@ -73,15 +73,6 @@ class LeaveFormSubmitView(APIView):
             subject='ug_leave'
         )
 
-        # new_tracking = Tracking.objects.create(
-        #     file_id=file_id,  # The newly created file object
-        #     uploader=request.user.username,
-        #     uploader_designation=obj,
-        #     receiver=leave_hod,
-        #     receive_design=receiver_designation_obj,  # Receiver's designation object
-        #     tracking_extra_JSON=file_extra_JSON,  # Additional metadata in JSON format
-        #     remarks=f"File with id:{file_id} created by {uploader} and sent to {receiver}"  # Remarks for this tracking event
-        # )
 
         message = "A new leave application"
         otheracademic_notif(request.user, leave_hod, 'ug_leave_hod', leave.id, 'student', message)
@@ -141,16 +132,6 @@ class LeavePGSubmitView(APIView):
             attached_file=None,
             subject='pg_leave'
         )
-
-        # new_tracking = Tracking.objects.create(
-        #     file_id=file_id,  # The newly created file object
-        #     uploader=request.user.username,
-        #     uploader_designation=obj,
-        #     receiver=leave_hod,
-        #     receive_design=receiver_designation_obj,  # Receiver's designation object
-        #     tracking_extra_JSON=file_extra_JSON,  # Additional metadata in JSON format
-        #     remarks=f"File with id:{file_id} created by {uploader} and sent to {receiver}"  # Remarks for this tracking event
-        # )
 
         message = "A new leave application"
         otheracademic_notif(request.user, leave_ta, 'pg_leave_at', leave.id, 'student', message)

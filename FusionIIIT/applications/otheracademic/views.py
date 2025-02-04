@@ -693,11 +693,6 @@ def bonafide_form_submit(request):
         bonafide.save()
         acad_admin_des_id = Designation.objects.get(name="acadadmin")        
         user_ids = HoldsDesignation.objects.filter(designation_id=acad_admin_des_id.id).values_list('user_id', flat=True) 
-        # print(user_ids)  
-        # print(user_ids[0]) 
-        # acad_admins = ExtraInfo.objects.get(user_id=user_ids[0])
-        # # print(acad_admins)
-        # user=ExtraInfo.objects.get(pk=acad_admins.id)
         bonafide_receiver = User.objects.get(id=user_ids[0])
         message='A Bonafide applicationn received'
         otheracademic_notif(request.user,bonafide_receiver, 'bonafide', 1, 'student', message)
