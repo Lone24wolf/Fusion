@@ -20,5 +20,7 @@ urlpatterns = [
     url(r'^download_excel/', views.DownloadExcelAPI.as_view(), name='download_excel'),
     url(r'^submitGradesProf/', views.SubmitGradesProfAPI.as_view(), name='submitGradesProf'),
     url(r'^upload_grades_prof/', views.UploadGradesProfAPI.as_view(), name='upload_grades_prof'),
+    url(r'^generate_pdf/', views.GeneratePDFAPI.as_view(), name='generate_pdf'),
+    url(r'^downloadGrades/', views.DownloadGradesAPI.as_view(), name='downloadGrades'),
 
 ]

@@ -43,7 +43,13 @@ from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment, Font
 import traceback
 from applications.academic_information.models import Course
-
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.colors import HexColor
+from reportlab.lib.units import inch
+from reportlab.pdfgen.canvas import Canvas
 
 
 
@@ -255,7 +261,7 @@ class UploadGradesAPI(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if courses.exists():
+            if courses.exists() and not courses.first().reSubmit:
                 message = "THIS Course was Already Submitted"
                 redirect_url = reverse("examination:message") + f"?message={message}"
                 return Response(
@@ -287,16 +293,20 @@ class UploadGradesAPI(APIView):
                     stud = Student.objects.get(id_id=roll_no)
                     semester = semester or stud.curr_semester_no
                     batch = stud.batch
-
+                    reSubmit = False
                     # Create grade entry
-                    Student_grades.objects.create(
-                        roll_no=roll_no,
-                        grade=grade,
-                        remarks=remarks,
-                        course_id_id=course_id,
-                        year=academic_year,
-                        semester=semester,
-                        batch=batch,
+                    Student_grades.objects.update_or_create(
+                    roll_no=roll_no,
+                    course_id_id=course_id,
+                    year=academic_year,
+                    semester=semester,
+                    batch=batch,
+            # Fields that will be updated if a match is found
+                    defaults={
+                        'grade': grade,
+                        'remarks': remarks,
+                        'reSubmit': reSubmit,
+                    }
                     )
                 except Student.DoesNotExist:
                     return Response(
@@ -409,8 +419,8 @@ Headers:
 Body (JSON):
     {
         "Role": "acadadmin",
-        "course": "<course_id>",
-        "year": "<academic_year>"
+        "course": <course_id>,
+        "year": <academic_year>
     }
 
 Response:
@@ -498,8 +508,8 @@ Body (JSON):
     {
         "Role": "acadadmin",
         "student_ids": ["20231001", "20231002"],
-        "semester_ids": ["5", "5"],
-        "course_ids": ["CS101", "CS101"],
+        "semester_ids": [5, 5],
+        "course_ids": [101, 101],
         "grades": ["A", "B"],
         "allow_resubmission": "YES"
     }
@@ -702,7 +712,7 @@ Expected Requests:
    Body (JSON):
        {
            "programme": "B.Tech",
-           "batch": "2021",
+           "batch": 2021,
            "specialization": "AI & ML",
            "semester": 5
        }
@@ -929,7 +939,6 @@ class GenerateResultAPI(APIView):
 
                 row_idx += 1
 
-            # Generate Excel Response
             response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
             response['Content-Disposition'] = 'attachment; filename="student_grades.xlsx"'
             wb.save(response)
@@ -1030,11 +1039,9 @@ class DownloadExcelAPI(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Create a CSV response
         response = HttpResponse(content_type="text/csv")
         response["Content-Disposition"] = 'attachment; filename="grades.csv"'
 
-        # Write data to CSV
         writer = csv.writer(response)
         writer.writerow(["Student ID", "Semester ID", "Course ID", "Grade"])
         for student_id, semester_id, course_id, grade in zip(
@@ -1111,11 +1118,12 @@ class UploadGradesProfAPI(APIView):
     Request:
         - Method: POST
         - Headers:
-            - Authorization: Bearer <token>
+            - Authorization: Token <token>
         - Body (Form Data / Multipart Request):
+            - Role: User role (Associate Professor, Professor, Assistant Professor)
             - csv_file: (file) CSV file containing student grades.
-            - course_id: (str) ID of the course.
-            - academic_year: (str) Academic year (should be a valid number).
+            - course_id:  ID of the course.
+            - academic_year:  Academic year (should be a valid number).
     
     CSV File Format:
         - The uploaded file must be in CSV format.
@@ -1123,7 +1131,7 @@ class UploadGradesProfAPI(APIView):
             - roll_no (str): Student Roll Number
             - grade (str): Grade awarded
             - remarks (str): Additional comments (if any)
-            - semester (optional, str): Semester number (if not provided, the student's current semester is used)
+            - semester (optional): Semester number (if not provided, the student's current semester is used)
 
     Responses:
         - 200 OK: Grades uploaded successfully.
@@ -1184,12 +1192,10 @@ class UploadGradesProfAPI(APIView):
                 grade = row["grade"]
                 remarks = row.get("remarks", "")
 
-                # Determine semester
-                semester = row.get("semester")
+                semester = row["semester"] if "semester" in row and row["semester"] else None
                 student = Student.objects.get(id_id=roll_no)
                 semester = semester or student.curr_semester_no
 
-                # Update or create Student Grades
                 Student_grades.objects.update_or_create(
                     roll_no=roll_no,
                     course_id_id=course_id,
@@ -1211,3 +1217,258 @@ class UploadGradesProfAPI(APIView):
             return Response({"error": f"An error occurred: {str(e)}"}, status=500)
         
 
+class DownloadGradesAPI(APIView):
+    """
+    API to retrieve downloadable student grades for professors.
+
+    Request:
+        - Method: POST
+        - Headers:
+            - Authorization: Token <token>
+        - Body (JSON):
+            {
+                "Role": "Associate Professor",
+                "academic_year"(optional): "2023"
+            }
+
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """
+        Handles POST request to retrieve student grades for download.
+        """
+
+        role = request.data.get("Role")
+        if role not in ["Associate Professor", "Professor", "Assistant Professor"]:
+            return Response(
+                {"error": "Access denied."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        academic_year = request.data.get("academic_year")
+
+        if academic_year:
+            if not academic_year.isdigit():
+                return Response({}, status=status.HTTP_400_BAD_REQUEST)
+
+            unique_course_ids = (
+                CourseInstructor.objects.filter(instructor_id_id=request.user.username)
+                .values("course_id_id")
+                .distinct()
+                .annotate(course_id_int=Cast("course_id_id", IntegerField()))
+            )
+
+            courses_info = Student_grades.objects.filter(
+                year=academic_year,
+                course_id_id__in=unique_course_ids.values_list("course_id_int", flat=True)
+            )
+
+            courses_details = Courses.objects.filter(
+                id__in=courses_info.values_list("course_id_id", flat=True)
+            )
+
+            return Response({"courses": list(courses_details.values())}, status=status.HTTP_200_OK)
+
+        # If academic_year is not provided, return working years
+        working_years = course_registration.objects.values("working_year").distinct()
+        return Response({"working_years": list(working_years)}, status=status.HTTP_200_OK)
+        
+
+class GeneratePDFAPI(APIView):
+    """
+    API for generating a PDF containing grade details for a course.
+    Only accessible to authenticated users with professor-level roles.
+    
+    Request:
+        - Method: POST
+        - Headers:
+            - Authorization: Token <token>
+        - Body (JSON):
+            {
+                "Role": "Associate Professor",
+                "academic_year": 2023,
+                "course_id": 101
+            }
+
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            role = request.data.get("Role")
+            if role not in ["Associate Professor", "Professor", "Assistant Professor"]:
+                return Response(
+                    {"error": "Access denied."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            course_id = request.data.get("course_id")
+            academic_year = request.data.get("academic_year")
+
+            course_info = get_object_or_404(Courses, id=course_id)
+
+            grades = Student_grades.objects.filter(course_id_id=course_id, year=academic_year).order_by("roll_no")
+
+            # Verify if the requesting user is the assigned instructor
+            course = CourseInstructor.objects.filter(
+                course_id_id=course_id,
+                year=academic_year,
+                instructor_id_id=request.user.username
+            )
+            if not course.exists():
+                return Response({"success": False, "error": "Course not found."}, status=404)
+
+            # Extract semester from the first entry (assumption: all entries have the same semester)
+            semester = course.first().semester_no
+
+            all_grades = ["O", "A+", "A", "B+", "B", "C+", "C", "D+", "D", "F", "I", "S", "X"]
+            grade_counts = {grade: grades.filter(grade=grade).count() for grade in all_grades}
+
+            # Create HTTP response for PDF
+            response = HttpResponse(content_type="application/pdf")
+            response["Content-Disposition"] = f'attachment; filename="{course_info.code}_grades.pdf"'
+
+            doc = SimpleDocTemplate(response, pagesize=letter)
+            elements = []
+            styles = getSampleStyleSheet()
+
+            # Custom Header Style
+            header_style = ParagraphStyle(
+            "HeaderStyle",
+            parent=styles["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=16,
+            textColor=HexColor("#333333"),
+            spaceAfter=20,
+            alignment=1,  
+            )
+            subheader_style = ParagraphStyle(
+                "SubheaderStyle",
+                parent=styles["Normal"],
+                fontSize=12,
+                textColor=HexColor("#666666"),
+                spaceAfter=10,
+            )
+            instructor = request.user.first_name + " " + request.user.last_name
+
+            # Add Header
+            elements.append(Paragraph(f"Grade Sheet", header_style))
+            field_label_style = ParagraphStyle(
+            "FieldLabelStyle",
+            parent=styles["Normal"],
+            fontSize=12,
+            textColor=colors.black, 
+            spaceAfter=5,
+        )
+            field_value_style = ParagraphStyle(
+            "FieldValueStyle",
+            parent=styles["Normal"],
+            fontSize=12,
+            textColor=HexColor("#666666"), 
+            spaceAfter=10,
+        )
+
+            elements.append(Paragraph(f"<b>Session:</b> {academic_year}", field_label_style))
+            elements.append(Paragraph(f"<b>Semester:</b> {semester}", field_label_style))
+            elements.append(Paragraph(f"<b>Course Code:</b> {course_info.code}", field_label_style))
+            elements.append(Paragraph(f"<b>Course Name:</b> {course_info.name}", field_label_style))
+            elements.append(Paragraph(f"<b>Instructor:</b> {instructor}", field_label_style))
+
+            data = [["S.No.", "Roll Number", "Grade"]]
+            for i, grade in enumerate(grades, 1):
+                data.append([i, grade.roll_no, grade.grade])
+            table = Table(data, colWidths=[80, 300, 100])
+
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#E0E0E0")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, 0), 14),
+                        ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+                        ("BACKGROUND", (0, 1), (-1, -1), HexColor("#F9F9F9")),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor("#F9F9F9"), colors.white]),
+                        ("TEXTCOLOR", (0, 1), (-1, -1), colors.black),
+                        ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+                        ("FONTSIZE", (0, 1), (-1, -1), 12),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ]
+                )
+            )
+            elements.append(table)
+            elements.append(Spacer(1, 20))
+
+            elements.append(Paragraph(f"Grade Distribution:", header_style))
+
+            grade_data1 = [["O", "A+", "A", "B+", "B", "C+", "C", "D+"]]
+            grade_data1.append([grade_counts[grade] for grade in grade_data1[0]])
+            grade_table1 = Table(grade_data1, colWidths=[60] * 8)
+            grade_table1.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#E0E0E0")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, 0), 12),
+                        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                        ("BACKGROUND", (0, 1), (-1, -1), colors.white),
+                        ("TEXTCOLOR", (0, 1), (-1, -1), colors.black),
+                    ]
+                )
+            )
+            elements.append(grade_table1)
+            elements.append(Spacer(1, 10))
+
+            grade_data2 = [["D", "F", "I", "S", "X"]]
+            grade_data2.append([grade_counts[grade] for grade in grade_data2[0]])
+            grade_table2 = Table(grade_data2, colWidths=[60] * 5)
+            grade_table2.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), HexColor("#E0E0E0")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, 0), 12),
+                        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                        ("BACKGROUND", (0, 1), (-1, -1), colors.white),
+                        ("TEXTCOLOR", (0, 1), (-1, -1), colors.black),
+                    ]
+                )
+            )
+            elements.append(grade_table2)
+            elements.append(Spacer(1, 40))
+
+            verified_style = ParagraphStyle(
+            "VerifiedStyle",
+            parent=styles["Normal"],
+            fontSize=13,
+            textColor=HexColor("#333333"),
+            alignment=0, 
+            spaceAfter=20,
+            )
+            elements.append(Paragraph("I have carefully checked and verified the submitted grade. The grade distribution and submitted grades are correct. [Please mention any exception below.]", verified_style))
+
+            def draw_signatures(canvas, doc):
+                canvas.saveState()
+                width, height = letter
+                canvas.drawString(inch, 0.75 * inch, "")
+                canvas.drawString(inch, 0.5 * inch, "Date")
+                canvas.drawString(width - 4 * inch, 0.75 * inch, "")
+                canvas.drawString(width - 4 * inch, 0.5 * inch, "Course Instructor's Signature")
+                canvas.restoreState()
+
+            doc.build(elements, onLaterPages=draw_signatures, onFirstPage=draw_signatures)
+            return response
+
+        except Exception as e:
+            traceback.print_exc()
+            return Response({'error': str(e)}, status=500)
